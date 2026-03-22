@@ -60,7 +60,7 @@ python server.py
 - `read_audio_metadata`: Reads audio information (duration, bitrate, tags). Supports exporting to a file via `export_to`.
 - `write_audio_metadata`: Updates audio tags. `metadata_updates` should be a JSON string.
 - `delete_audio_metadata`: Permanently removes all metadata tags from a file.
-- `rename_audio_by_template`: Renames files based on tags. Supports placeholders like `%artist%`, `%title%`, `%album%`, `%track%`, `%year%`, and `$num(%track%,2)` for padding.
+- `rename_audio_by_template`: Renames files based on tags. Supports placeholders like `%artist%`, `%title%`, `%album%`, `%track%`, `%year%`, and `$num(%track%,2)` for padding (inspired by [Mp3tag](https://www.mp3tag.de/en/), with thanks).
 - `extract_cover_art`: Extracts the first found cover art to a specified path.
 - `embed_cover_art`: Embeds an image as the audio file's cover art.
 - `get_lyrics` / `set_lyrics`: Manage unsynced lyrics.
