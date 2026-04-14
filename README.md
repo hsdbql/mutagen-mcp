@@ -39,7 +39,7 @@ Add the following to your MCP settings file (e.g., `mcp_settings.json`):
     "mutagen-mcp": {
       "command": "path/to/your/python.exe",
       "args": [
-        "path/to/your/server.py"
+        "path/to/the/server.py"
       ]
     }
   }

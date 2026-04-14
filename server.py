@@ -3,7 +3,7 @@ import re
 import json
 import mimetypes
 import inspect
-from typing import Union, List
+from typing import Union, List, Dict, Any
 from functools import wraps
 from mcp.server.fastmcp import FastMCP
 import mutagen
@@ -13,93 +13,61 @@ mcp = FastMCP("mutagen-mcp")
 
 
 def standardize_batch_args(kwargs):
-    is_dir_val = kwargs.get("isDir", 0)
-    is_dir = is_dir_val[0] if isinstance(is_dir_val, list) else is_dir_val
+    tasks = kwargs.get("tasks")
+    if tasks and isinstance(tasks, list):
+        raw_tasks = tasks
+        started_as_batch = True
+    else:
+        # Single invocation fallback
+        raw_tasks = [kwargs]
+        started_as_batch = False
 
-    if is_dir in (1, 2) and "filepath" in kwargs:
-        fps = kwargs["filepath"]
-        if not isinstance(fps, list):
-            fps = [fps]
+    exts = {
+        ".mp3", ".flac", ".m4a", ".m4b", ".m4p", ".m4r", ".mp4", ".m4v", ".ogg",
+        ".oga", ".ogv", ".mka", ".mkv", ".webm", ".opus", ".wav", ".aiff", ".aif",
+        ".ape", ".aac", ".alac", ".wma", ".wv", ".mpc", ".tak", ".dsf", ".dff",
+        ".spx", ".tta", ".3gp",
+    }
 
-        expanded_fps = []
-        exts = {
-            ".mp3",
-            ".flac",
-            ".m4a",
-            ".m4b",
-            ".m4p",
-            ".m4r",
-            ".mp4",
-            ".m4v",
-            ".ogg",
-            ".oga",
-            ".ogv",
-            ".mka",
-            ".mkv",
-            ".webm",
-            ".opus",
-            ".wav",
-            ".aiff",
-            ".aif",
-            ".ape",
-            ".aac",
-            ".alac",
-            ".wma",
-            ".wv",
-            ".mpc",
-            ".tak",
-            ".dsf",
-            ".dff",
-            ".spx",
-            ".tta",
-            ".3gp",
-        }
+    final_tasks = []
+    expanded_any_dir = False
 
-        for fp in fps:
-            if not os.path.exists(fp):
-                expanded_fps.append(fp)
-                continue
-            if not os.path.isdir(fp):
-                expanded_fps.append(fp)
-                continue
+    for task in raw_tasks:
+        is_dir = task.get("isDir", 0)
+        fp = task.get("filepath", "")
 
-            if is_dir == 2:
-                for root, _, filenames in os.walk(fp):
-                    for filename in filenames:
-                        if os.path.splitext(filename)[1].lower() in exts:
-                            expanded_fps.append(os.path.join(root, filename))
-            elif is_dir == 1:
-                for entry in os.scandir(fp):
-                    if (
-                        entry.is_file()
-                        and os.path.splitext(entry.name)[1].lower() in exts
-                    ):
-                        expanded_fps.append(entry.path)
+        if is_dir in (1, 2) and fp:
+            fps = [fp] if not isinstance(fp, list) else fp
+            for single_fp in fps:
+                if not os.path.exists(single_fp) or not os.path.isdir(single_fp):
+                    new_task = task.copy()
+                    new_task["filepath"] = single_fp
+                    new_task["isDir"] = 0
+                    final_tasks.append(new_task)
+                    continue
 
-        kwargs["filepath"] = expanded_fps
+                if is_dir == 2:
+                    for root, _, filenames in os.walk(single_fp):
+                        for filename in filenames:
+                            if os.path.splitext(filename)[1].lower() in exts:
+                                new_task = task.copy()
+                                new_task["filepath"] = os.path.join(root, filename)
+                                new_task["isDir"] = 0
+                                final_tasks.append(new_task)
+                                expanded_any_dir = True
+                elif is_dir == 1:
+                    for entry in os.scandir(single_fp):
+                        if entry.is_file() and os.path.splitext(entry.name)[1].lower() in exts:
+                            new_task = task.copy()
+                            new_task["filepath"] = entry.path
+                            new_task["isDir"] = 0
+                            final_tasks.append(new_task)
+                            expanded_any_dir = True
+        else:
+            final_tasks.append(task)
 
-    batch_len = None
-    for k, v in kwargs.items():
-        if isinstance(v, list):
-            if batch_len is None:
-                batch_len = len(v)
-            elif len(v) != batch_len:
-                raise ValueError("All array arguments must have the same length.")
-
-    if batch_len is None:
-        return [kwargs], False
-
-    batch_kwargs_list = []
-    for i in range(batch_len):
-        single_kwargs = {}
-        for k, v in kwargs.items():
-            if isinstance(v, list):
-                single_kwargs[k] = v[i]
-            else:
-                single_kwargs[k] = v
-        batch_kwargs_list.append(single_kwargs)
-
-    return batch_kwargs_list, True
+    is_batch = started_as_batch or expanded_any_dir
+    return final_tasks, is_batch
 
 
 def batchable(func):
@@ -118,8 +86,10 @@ def batchable(func):
 
         results = []
         for kw in batch_kwargs_list:
+            # Drop tasks if passing down to tools since they don't expect it inside kwargs
+            call_kw = {k: v for k, v in kw.items() if k != "tasks"}
             try:
-                res = func(**kw)
+                res = func(**call_kw)
                 if isinstance(res, str):
                     try:
                         res = json.loads(res)
@@ -156,9 +126,10 @@ def batchable(func):
     # Append batch instruction to the docstring so AI models know how to use it
     batch_notice = (
         "\n\n**BATCH OPERATION SUPPORT**:\n"
-        "This tool supports batch processing. You can pass a list (array) of values for arguments "
-        "(e.g., a list of filepaths instead of a single string) to process multiple items at once. "
-        "When using batch mode, all list arguments must be of the same length."
+        "To perform bulk or batch operations on multiple files, DO NOT pass arrays to individual arguments. "
+        "Instead, you MUST use the `tasks` argument to pass a list of independent parameter dictionaries. "
+        "E.g. `tasks=[{\"filepath\": \"file1.mp3\", \"isDir\": 0}, {\"filepath\": \"file2.mp3\"}]`.\n"
+        "When using `tasks`, you can omit all other root-level arguments."
     )
     if wrapper.__doc__:
         wrapper.__doc__ += batch_notice
@@ -196,10 +167,11 @@ def get_audio_object(filepath: str, format_name: str = ""):
 @mcp.tool()
 @batchable
 def read_audio_metadata(
-    filepath: StrOrList,
+    filepath: StrOrList = "",
     format_name: StrOrList = "",
     isDir: int = 0,
     export_to: StrOrList = "",
+    tasks: List[dict] = None,
 ) -> str:
     """Reads audio file information and tags for the specified file."""
     try:
@@ -247,10 +219,11 @@ def read_audio_metadata(
 @mcp.tool()
 @batchable
 def write_audio_metadata(
-    filepath: StrOrList,
-    metadata_updates: StrOrList,
+    filepath: StrOrList = "",
+    metadata_updates: StrOrList = "",
     format_name: StrOrList = "",
     isDir: int = 0,
+    tasks: List[dict] = None,
 ) -> str:
     """Updates tags for an audio file."""
     try:
@@ -300,7 +273,7 @@ def write_audio_metadata(
 @mcp.tool()
 @batchable
 def delete_audio_metadata(
-    filepath: StrOrList, format_name: StrOrList = "", isDir: int = 0
+    filepath: StrOrList = "", format_name: StrOrList = "", isDir: int = 0, tasks: List[dict] = None
 ) -> str:
     """Completely removes all metadata tags from an audio file.
 
@@ -336,7 +309,7 @@ def delete_audio_metadata(
 
 @mcp.tool()
 @batchable
-def rename_file(old_path: StrOrList, new_path: StrOrList) -> str:
+def rename_file(old_path: StrOrList = "", new_path: StrOrList = "", tasks: List[dict] = None) -> str:
     """Renames or moves a file."""
     try:
         os.rename(old_path, new_path)
@@ -370,7 +343,7 @@ def list_directory(directory: str, recursive: bool = False) -> str:
 @mcp.tool()
 @batchable
 def rename_audio_by_template(
-    filepath: StrOrList, template: StrOrList, isDir: int = 0
+    filepath: StrOrList = "", template: StrOrList = "", isDir: int = 0, tasks: List[dict] = None
 ) -> str:
     """Renames an audio file based on its metadata tags using a template.
 
@@ -439,7 +412,7 @@ def rename_audio_by_template(
 @mcp.tool()
 @batchable
 def extract_cover_art(
-    filepath: StrOrList, output_path: StrOrList, isDir: int = 0
+    filepath: StrOrList = "", output_path: StrOrList = "", isDir: int = 0, tasks: List[dict] = None
 ) -> str:
     """Extracts the first cover art picture found in the audio file."""
     try:
@@ -482,7 +455,7 @@ def extract_cover_art(
 
 @mcp.tool()
 @batchable
-def embed_cover_art(filepath: StrOrList, image_path: StrOrList, isDir: int = 0) -> str:
+def embed_cover_art(filepath: StrOrList = "", image_path: StrOrList = "", isDir: int = 0, tasks: List[dict] = None) -> str:
     """Embeds an image as the cover art for an audio file."""
     try:
         if not os.path.exists(image_path):
@@ -550,7 +523,7 @@ def embed_cover_art(filepath: StrOrList, image_path: StrOrList, isDir: int = 0) 
 
 @mcp.tool()
 @batchable
-def get_lyrics(filepath: StrOrList, isDir: int = 0) -> str:
+def get_lyrics(filepath: StrOrList = "", isDir: int = 0, tasks: List[dict] = None) -> str:
     """Reads synced/unsynced lyrics from the audio file."""
     try:
         audio = mutagen.File(filepath)
@@ -589,7 +562,7 @@ def get_lyrics(filepath: StrOrList, isDir: int = 0) -> str:
 
 @mcp.tool()
 @batchable
-def set_lyrics(filepath: StrOrList, lyrics_text: StrOrList, isDir: int = 0) -> str:
+def set_lyrics(filepath: StrOrList = "", lyrics_text: StrOrList = "", isDir: int = 0, tasks: List[dict] = None) -> str:
     """Sets the unsynced lyrics of the audio file."""
     try:
         audio = mutagen.File(filepath)
@@ -627,7 +600,7 @@ def set_lyrics(filepath: StrOrList, lyrics_text: StrOrList, isDir: int = 0) -> s
 
 @mcp.tool()
 @batchable
-def strip_legacy_tags(filepath: StrOrList, isDir: int = 0) -> str:
+def strip_legacy_tags(filepath: StrOrList = "", isDir: int = 0, tasks: List[dict] = None) -> str:
     """Removes legacy tags (like APEv2 or ID3v1 on MP3s) and forces standard ID3v2.4.
 
     WARNING: Destructive formatting. This deletes original legacy tags structure
@@ -671,7 +644,7 @@ def strip_legacy_tags(filepath: StrOrList, isDir: int = 0) -> str:
 
 @mcp.tool()
 @batchable
-def read_file(filepath: StrOrList) -> str:
+def read_file(filepath: StrOrList = "", tasks: List[dict] = None) -> str:
     """Reads the text content of a file."""
     try:
         with open(filepath, "r", encoding="utf-8") as f:
@@ -685,7 +658,7 @@ def read_file(filepath: StrOrList) -> str:
 
 @mcp.tool()
 @batchable
-def write_file(filepath: StrOrList, content: StrOrList) -> str:
+def write_file(filepath: StrOrList = "", content: StrOrList = "", tasks: List[dict] = None) -> str:
     """Writes text content to a file, overwriting any existing content.
 
     WARNING: This completely replaces the file. Use with caution as original
@@ -708,7 +681,7 @@ def write_file(filepath: StrOrList, content: StrOrList) -> str:
 @mcp.tool()
 @batchable
 def delete_file(
-    filepath: StrOrList, force_delete: bool = False, confirm_file_name: str = ""
+    filepath: StrOrList = "", force_delete: bool = False, confirm_file_name: str = "", tasks: List[dict] = None
 ) -> str:
     """Permanently deletes a file from the disk.
 
